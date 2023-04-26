@@ -5,7 +5,7 @@ it consistently scrapes https://baseballreference.com on a set interval for the 
 The interval can be set via the variable interval, in the __init__ method for the Updater class. The information can then be sent to an API in JSON format which can in turn update and/or interact with the database storing the 
 info. 
 
-USAGE 
+USAGE:
     - ./bin/scrape start
         - runs server on localhost port 6000 
         - log output to var/updater.log

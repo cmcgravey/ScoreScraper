@@ -11,7 +11,7 @@ import threading
 import socket
 import json
 
-# Dictionary to sub team names for team abbreviations
+# dictionary to sub team names for team abbreviations
 TEAM_DICT = {
     "D'backs": "ARI",
     "Arizona Diamondbacks": "ARI",
@@ -75,91 +75,13 @@ TEAM_DICT = {
     "Nationals": "WAS"
 }
 
+# logger records output of server 
 LOGGER = logging.getLogger(__name__)
-
-# Scrape for previous day's winners
-def scrape_for_scores(date):
-    day, month, year = date.rstrip().split('/')
-    query = '?year=' + year + '&month=' + month + '&day=' + day
-
-    r = requests.get(f"https://www.baseball-reference.com/boxes/{query}")
-    soup = BeautifulSoup(r.content, 'html5lib')
-
-    scoreboard = soup.findAll('tr', attrs= {"class": "winner"})
-    winners = []
-
-    for game in scoreboard:
-        out_str = game.text
-        out_str = out_str.rstrip()
-        out_str = re.sub('[0-9]', '', out_str)
-        out_str = out_str.replace('Final', '')
-        out_str = out_str.replace('()', '')
-        out_str = out_str.replace('\n', '')
-        out_str = out_str.replace('\t', '')
-        out_str = TEAM_DICT[out_str]
-        if out_str != '':
-            winners.append(out_str)
-    
-    return winners
-
-# Scrape for today's matchups 
-def scrape_for_next_games():
-
-    r = requests.get("https://www.baseball-reference.com/previews/")
-    soup = BeautifulSoup(r.content, 'html5lib')
-
-    matchups = soup.findAll('table', attrs={'class': 'teams'})
-    match_out = []
-
-    for matchup in matchups:
-        teams = matchup.findAll('a')
-        team_list = []
-        for team in teams:
-            if team.text == 'Preview':
-                continue
-            else:
-                out_str = team.text
-                out_str = out_str.rstrip().strip()
-                out_str = re.sub('[0-9]', '', out_str)
-                out_str = out_str.replace('Preview', '')
-                out_str = out_str.replace('(-)', '')
-                out_str = out_str.replace(':PM', '')
-                out_str = TEAM_DICT[out_str]
-                team_list.append(out_str)
-
-        match_out.append(team_list)                   
-
-    return match_out
-
-
-def run_scrapers():
-
-
-    today = date.today()
-    d = timedelta(days = 1)
-    todaymin1 = today - d
-    daymin1 = todaymin1.strftime("%d/%m/%Y")
-    today = today.strftime("%d/%m/%Y")
-    teams_won = scrape_for_scores(daymin1)
-    tmr_matchups = scrape_for_next_games()
-
-    # Send update request to API to update previous games 
-    url = 'http://localhost:8000/v1/api/update/?type=winners'
-    obj = {"winners": teams_won,
-        "date": daymin1}
-    requests.post(url, json = obj)
-
-    # Send update request to API to add today's games 
-    url = 'http://localhost:8000/v1/api/update/?type=matchups'
-    obj = {"matchups": tmr_matchups, 
-        "date": today}
-    requests.post(url, json = obj)
-
 
 class Updater:
 
     # Scrape for previous day's winners
-    def scrape_for_scores(date):
+    def scrape_for_scores(self, date):
         day, month, year = date.rstrip().split('/')
         query = '?year=' + year + '&month=' + month + '&day=' + day
 
@@ -184,7 +106,7 @@ class Updater:
         return winners
 
     # Scrape for today's matchups 
-    def scrape_for_next_games():
+    def scrape_for_next_games(self):
 
         r = requests.get("https://www.baseball-reference.com/previews/")
         soup = BeautifulSoup(r.content, 'html5lib')
@@ -212,11 +134,11 @@ class Updater:
 
         return match_out
     
-    # Run both scrapers once per day at 2 AM
+    # Run both scrapers at set interval 
     def run_scrapers(self):
-
         while not self.signals["shutdown"]:
 
+            # check if it is time for new update 
             now = datetime.now()
             if now < self.nextupdate:
                 continue
@@ -227,46 +149,55 @@ class Updater:
                 todaymin1 = today - d
                 daymin1 = todaymin1.strftime("%d/%m/%Y")
                 today = today.strftime("%d/%m/%Y")
-                teams_won = scrape_for_scores(daymin1)
-                tmr_matchups = scrape_for_next_games()
+                teams_won = self.scrape_for_scores(daymin1)
+                tmr_matchups = self.scrape_for_next_games()
 
                 # Send update request to API to update previous games 
                 url = 'http://localhost:8000/v1/api/update/?type=winners'
                 obj = {"winners": teams_won,
                     "date": daymin1}
                 requests.post(url, json = obj)
-                LOGGER.info("updated winners")
 
                 # Send update request to API to add today's games 
                 url = 'http://localhost:8000/v1/api/update/?type=matchups'
                 obj = {"matchups": tmr_matchups, 
                     "date": today}
                 requests.post(url, json = obj)
-                LOGGER.info("updated matchups")
 
+                # set new update time
                 self.currentupdate = now
                 delta = timedelta(minutes=1)
                 self.nextupdate = self.currentupdate + delta
+                LOGGER.info(f"updated winners at {str(self.currentupdate)}")
+                LOGGER.info(f"updated matchups at {str(self.currentupdate)}")
+                LOGGER.info(f"next update scheduled for {str(self.nextupdate)}")
                 time.sleep(10)
 
+    # initialize instance of updater: listen for shutdown and begin scraping thread
     def __init__(self, host, port):
-        # Grab current date and day before 
+        """Initialize Updater."""
         self.signals = {"shutdown": False}
+        LOGGER.info("starting Updater")
+
+        # get current time and time of next update 
         self.currentupdate = datetime.now()
         interval = timedelta(minutes=1)
         self.nextupdate = self.currentupdate + interval
+
+        # initialize thread for running scrapers 
         self.thread = threading.Thread(target=self.run_scrapers)
         self.thread.start()
-        LOGGER.info("starting Updater")
 
+        # open TCP socket to listen for shutdown messages 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            # Bind the socket to the server
+
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind((host, port))
             sock.listen()
             sock.settimeout(1)
 
             while True:
+                # accept messages on given host and port
                 try:
                     clientsocket, address = sock.accept()
                 except socket.timeout:
@@ -304,9 +235,6 @@ class Updater:
                     LOGGER.info("shutting down")
                     return
         
-
-
-
 
 @click.command()
 @click.option("--host", "host", default="localhost")
