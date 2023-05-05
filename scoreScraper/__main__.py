@@ -1,3 +1,7 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.expected_conditions import visibility_of_element_located
 from bs4 import BeautifulSoup
 from datetime import date
 from datetime import timedelta
@@ -14,6 +18,7 @@ import json
 # dictionary to sub team names for team abbreviations
 TEAM_DICT = {
     "D'backs": "ARI",
+    "Dbacks": "ARI",
     "Arizona Diamondbacks": "ARI",
     "Braves": "ATL",
     "Atlanta Braves": "ATL",
@@ -53,7 +58,7 @@ TEAM_DICT = {
     "Yankees": "NYY",
     "Oakland Athletics": "OAK",
     "Athletics": "OAK",
-    "Philadelpha Phillies": "PHI",
+    "Philadelphia Phillies": "PHI",
     "Phillies": "PHI",
     "Pittsburgh Pirates": "PIT",
     "Pirates": "PIT",
@@ -83,54 +88,95 @@ class Updater:
     # Scrape for previous day's winners
     def scrape_for_scores(self, date):
         day, month, year = date.rstrip().split('/')
-        query = '?year=' + year + '&month=' + month + '&day=' + day
+        query = '?date=' + year + '-' + month + '-' + day
 
-        r = requests.get(f"https://www.baseball-reference.com/boxes/{query}")
-        soup = BeautifulSoup(r.content, 'html5lib')
+        browser = webdriver.Chrome()
+        browser.get(f"https://baseballsavant.mlb.com/gamefeed{query}")
 
-        scoreboard = soup.findAll('tr', attrs= {"class": "winner"})
+        title = (
+            WebDriverWait(driver=browser, timeout=10)
+            .until(visibility_of_element_located((By.CLASS_NAME, 'team-name')))
+            .text
+        )
+
+        content = browser.page_source
+        soup = BeautifulSoup(content, 'html5lib')
+        games = soup.find_all(class_="team-name")
+        scores = soup.find_all("div", class_="score")
+
         winners = []
 
-        for game in scoreboard:
-            out_str = game.text
-            out_str = out_str.rstrip()
-            out_str = re.sub('[0-9]', '', out_str)
-            out_str = out_str.replace('Final', '')
-            out_str = out_str.replace('()', '')
-            out_str = out_str.replace('\n', '')
-            out_str = out_str.replace('\t', '')
-            out_str = TEAM_DICT[out_str]
-            if out_str != '':
-                winners.append(out_str)
-        
+        for i in range(0, len(games), 2):
+            away = games[i].text.strip()
+            away = away.replace('\t', '')
+            away = away.replace('\n', '')
+            away = TEAM_DICT[away]
+
+            home = games[i+1].text.strip()
+            home = home.replace('\t', '')
+            home = home.replace('\n', '')
+            home = TEAM_DICT[home]
+
+            away_score = scores[i].text.strip()
+            away_score = away_score.replace('\n', '')
+            away_score = away_score.replace('\t', '')
+
+            home_score = scores[i+1].text.strip()
+            home_score = home_score.replace('\n', '')
+            home_score = home_score.replace('\t', '')
+
+            if int(away_score) > int(home_score):
+                winners.append(away)
+            else: 
+                winners.append(home)
+            
         return winners
 
-    # Scrape for today's matchups 
-    def scrape_for_next_games(self):
+    # Scrape for next day's matchups 
+    def scrape_for_next_games(self, date):
 
-        r = requests.get("https://www.baseball-reference.com/previews/")
-        soup = BeautifulSoup(r.content, 'html5lib')
+        day, month, year = date.rstrip().split('/')
 
-        matchups = soup.findAll('table', attrs={'class': 'teams'})
+        browser = webdriver.Chrome()
+        browser.get(f"https://baseballsavant.mlb.com/gamefeed?date={year}-{month}-{day}")
+
+        title = (
+            WebDriverWait(driver=browser, timeout=10)
+            .until(visibility_of_element_located((By.CLASS_NAME, 'team-name')))
+            .text
+        )
+
+        content = browser.page_source
+        soup = BeautifulSoup(content, 'html5lib')
+        games = soup.find_all(class_="team-name")
+        times = soup.find_all(class_="game-status-scheduled")
+
+        count = 0
         match_out = []
+        for i in range(0, len(games), 2):
+            away = games[i].text.strip()
+            away = away.replace('\t', '')
+            away = away.replace('\n', '')
+            away = TEAM_DICT[away]
 
-        for matchup in matchups:
-            teams = matchup.findAll('a')
-            team_list = []
-            for team in teams:
-                if team.text == 'Preview':
-                    continue
-                else:
-                    out_str = team.text
-                    out_str = out_str.rstrip().strip()
-                    out_str = re.sub('[0-9]', '', out_str)
-                    out_str = out_str.replace('Preview', '')
-                    out_str = out_str.replace('(-)', '')
-                    out_str = out_str.replace(':PM', '')
-                    out_str = TEAM_DICT[out_str]
-                    team_list.append(out_str)
+            home = games[i+1].text.strip()
+            home = home.replace('\t', '')
+            home = home.replace('\n', '')
+            home = TEAM_DICT[home]
 
-            match_out.append(team_list)                   
+            gametime = times[count].text.strip()
+            gametime = gametime.replace('\t', '')
+            gametime = gametime.replace('\n', '')
+
+            game_dict = {
+                "away": away, 
+                "home": home, 
+                "time": gametime, 
+            }
+
+            match_out.append(game_dict)
+
+            count += 1                 
 
         return match_out
     
@@ -147,10 +193,12 @@ class Updater:
                 today = date.today()
                 d = timedelta(days = 1)
                 todaymin1 = today - d
+                todayplus1 = today + d
                 daymin1 = todaymin1.strftime("%d/%m/%Y")
                 today = today.strftime("%d/%m/%Y")
+                todayplus1 = todayplus1.strftime("%d/%m/%Y")
                 teams_won = self.scrape_for_scores(daymin1)
-                tmr_matchups = self.scrape_for_next_games()
+                tmr_matchups = self.scrape_for_next_games(todayplus1)
 
                 # Send update request to API to update previous games 
                 url = 'http://localhost:8000/v1/api/update/?type=winners'
@@ -161,17 +209,16 @@ class Updater:
                 # Send update request to API to add today's games 
                 url = 'http://localhost:8000/v1/api/update/?type=matchups'
                 obj = {"matchups": tmr_matchups, 
-                    "date": today}
+                    "date": todayplus1}
                 requests.post(url, json = obj)
 
                 # set new update time
                 self.currentupdate = now
-                delta = timedelta(minutes=1)
-                self.nextupdate = self.currentupdate + delta
+                self.nextupdate = self.currentupdate + self.interval
                 LOGGER.info(f"updated winners at {str(self.currentupdate)}")
                 LOGGER.info(f"updated matchups at {str(self.currentupdate)}")
                 LOGGER.info(f"next update scheduled for {str(self.nextupdate)}")
-                time.sleep(10)
+                time.sleep(5)
 
     # initialize instance of updater: listen for shutdown and begin scraping thread
     def __init__(self, host, port):
@@ -181,8 +228,8 @@ class Updater:
 
         # get current time and time of next update 
         self.currentupdate = datetime.now()
-        interval = timedelta(minutes=1)
-        self.nextupdate = self.currentupdate + interval
+        self.interval = timedelta(seconds=30)
+        self.nextupdate = self.currentupdate - self.interval
 
         # initialize thread for running scrapers 
         self.thread = threading.Thread(target=self.run_scrapers)
